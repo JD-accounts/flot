@@ -558,10 +558,8 @@ Licensed under the MIT license.
                                 for (var key in angleCache) {
                                     if (Object.prototype.hasOwnProperty.call(angleCache, key)) {
                                         positions = angleCache[key].positions;
-                                        if (positions != null) {
-                                            for (i = 0; position = positions[i]; i++) {
-                                                position.active = false;
-                                            }
+                                        for (i = 0; position = positions[i]; i++) {
+                                            position.active = false;
                                         }
                                     }
                                 }
@@ -679,9 +677,6 @@ Licensed under the MIT license.
                     // size in pixels of ticks, or "full" for whole line
                     tickLength: null,
 
-                    // size in pixels of tick line width
-                    tickLineWidth: null,
-
                     // width of tick labels in pixels
                     tickWidth: null,
 
@@ -704,7 +699,13 @@ Licensed under the MIT license.
                     reserveSpace: null,
 
                     // axis number or null for no sync
-                    alignTicksWithAxis: null
+                    alignTicksWithAxis: null,
+
+                    // start axis position in % when multiple axes anchored on grid edge
+                    anchorStart: null,
+
+                    // end axis position in % when multiple axes anchored on grid edge
+                    anchorEnd: null
                 },
                 yaxis: {
 
@@ -790,6 +791,9 @@ Licensed under the MIT license.
                     // value in pixels
                     axisMargin: 8,
 
+                    // multiple axes anchored on grid edge
+                    anchorAxes: false,
+
                     // value in pixels
                     borderWidth: 2,
 
@@ -831,7 +835,19 @@ Licensed under the MIT license.
             octx = null,
             xaxes = [],
             yaxes = [],
+            axesLabelsMaxDims = {
+                left: 0,
+                right: 0,
+                top: 0,
+                bottom: 0
+            },
             plotOffset = {
+                left: 0,
+                right: 0,
+                top: 0,
+                bottom: 0
+            },
+            plotOffset0 = {
                 left: 0,
                 right: 0,
                 top: 0,
@@ -1202,81 +1218,20 @@ Licensed under the MIT license.
 
                 if (d[i].data != null) {
 
-                    // move the data instead of deep-copy            
-                    s.data = getSeriesDataFromArgs(d[i].data);
+                    // move the data instead of deep-copy
+                    s.data = d[i].data;
                     delete d[i].data;
 
                     $.extend(true, s, d[i]);
 
                     d[i].data = s.data;
-                }
-                else {
-                    s.data = getSeriesDataFromArgs(d[i]);
+                } else {
+                    s.data = d[i];
                 }
                 res.push(s);
             }
 
             return res;
-        }
-
-        function getSeriesDataFromArgs(seriesData) {
-
-            // seriesData is either the raw series array, or if series is an object, 
-            // seriesData is the value of the 'data' property
-
-            if (seriesData.length === 2 && typeof seriesData[1] === "function") {
-                return computeFunctionSeriesData(seriesData[0], seriesData[1]);
-            } else if (seriesData.length === 3 && typeof seriesData[1] === "function" &&
-                typeof seriesData[2] === "function") {
-                return computeFunctionSeriesData(seriesData[0], seriesData[1], seriesData[2]);
-            } else {
-                return seriesData;
-            }
-        }
-
-        function computeFunctionSeriesData(indVar, depFunc1, depFunc2) {
-
-            // Compute [x,y(x)] or [x(t),y(t)] given independent variable 
-            // and dependent variable functions
-            
-            var seriesData = [],
-                indArray = [];
-            if (hasOwnProperty.call(indVar,"min") && hasOwnProperty.call(indVar,"max") &&
-                hasOwnProperty.call(indVar,"n")) {
-                
-                // independent variable specified as a range
-                
-                var min     = indVar.min,
-                    max     = indVar.max,
-                    n       = indVar.n,
-                    delta   = (max-min)/(n-1);
-                for (var j = 0; j < n; j++) {
-                    indArray.push(min + delta*j);
-                }
-            } else if (indVar.length) {
-                
-                // independent variable specified as an array
-                
-                indArray = indVar;
-            } else {
-                throw new Error("Invalid specification of independent variable.");
-            }
-            
-            for (var k = 0; k < indArray.length; k++) {
-                var indVal = indArray[k];
-                if (depFunc2) {
-                    
-                    // t, x(t), y(t)
-                    
-                    seriesData.push([depFunc1(indVal), depFunc2(indVal)]);
-                } else {
-                    
-                    // x, y(x)
-                    
-                    seriesData.push([indVal, depFunc1(indVal)]);
-                }
-            }
-            return seriesData;
         }
 
         function axisNumber(obj, coord) {
@@ -1639,10 +1594,6 @@ Licensed under the MIT license.
                             }
                         }
                         if (f.y) {
-                            if (s.xaxis.options.min !== undefined && points[j] < s.xaxis.options.min ||
-                                    s.xaxis.options.max !== undefined && points[j] > s.xaxis.options.max) {
-                                continue;
-                            }
                             if (val < ymin) {
                                 ymin = val;
                             }
@@ -1771,7 +1722,7 @@ Licensed under the MIT license.
             // has been computed already
             function identity(x) { return x; }
 
-            var s, m, t = axis.options.transform || identity,
+            var s, m, p0, t = axis.options.transform || identity,
                 it = axis.options.inverseTransform;
 
             // precompute how much the axis is scaling a point
@@ -1785,20 +1736,34 @@ Licensed under the MIT license.
                 m = Math.max(t(axis.max), t(axis.min));
             }
 
+            // recompute scaling and define position offset if multiple axes anchored on grid edge
+            if (options.grid.anchorAxes && axis.options.anchorStart < axis.options.anchorEnd) {
+                if (axis.direction === "x") {
+                    p0 = axis.options.anchorStart / 100 * plotWidth;
+                }
+                else {
+                    p0 = axis.options.anchorStart / 100 * plotHeight;
+                }
+                s = s * (axis.options.anchorEnd - axis.options.anchorStart) / 100;
+            }
+            else {
+                p0 = 0;
+            }
+
             // data point to canvas coordinate
             if (t === identity) {
 
                 // slight optimization
-                axis.p2c = function(p) { return (p - m) * s; };
+                axis.p2c = function (p) { return (p - m) * s + p0; };
             } else {
-                axis.p2c = function(p) { return (t(p) - m) * s; };
+                axis.p2c = function (p) { return (t(p) - m) * s + p0; };
             }
 
             // canvas coordinate to data point
             if (!it) {
-                axis.c2p = function(c) { return m + c / s; };
+                axis.c2p = function (c) { return m + (c - p0) / s; };
             } else {
-                axis.c2p = function(c) { return it(m + c / s); };
+                axis.c2p = function (c) { return it(m + (c - p0) / s); };
             }
         }
 
@@ -1835,6 +1800,22 @@ Licensed under the MIT license.
             // Label width/height properties are deprecated; remove in 1.0!
             axis.labelWidth = axis.tickWidth;
             axis.labelHeight = axis.tickHeight;
+
+            // save maximum label width/height for all axis positions
+            if (options.grid.anchorAxes) {
+                if (axis.options.position === "left") {
+                    axesLabelsMaxDims.left = Math.max(axesLabelsMaxDims.left, axis.labelWidth);
+                }
+                if (axis.options.position === "right") {
+                    axesLabelsMaxDims.right = Math.max(axesLabelsMaxDims.right, axis.labelWidth);
+                }
+                if (axis.options.position === "top") {
+                    axesLabelsMaxDims.top = Math.max(axesLabelsMaxDims.top, axis.labelHeight);
+                }
+                if (axis.options.position === "bottom") {
+                    axesLabelsMaxDims.bottom = Math.max(axesLabelsMaxDims.bottom, axis.labelHeight);
+                }
+            }
         }
 
         /**
@@ -1860,22 +1841,25 @@ Licensed under the MIT license.
                 found = false;
 
             // Determine the axis's position in its direction and on its side
-            $.each(isXAxis ? xaxes : yaxes, function(i, a) {
-                if (a && (a.show || a.reserveSpace)) {
-                    if (a === axis) {
-                        found = true;
-                    } else if (a.options.position === axisPosition) {
-                        if (found) {
-                            outermost = false;
-                        } else {
-                            innermost = false;
+            // (ignore if multiple axes anchored on grid edge - they all are innermost, outermost and first)
+            if (!options.grid.anchorAxes) {
+                $.each(isXAxis ? xaxes : yaxes, function(i, a) {
+                    if (a && (a.show || a.reserveSpace)) {
+                        if (a === axis) {
+                            found = true;
+                        } else if (a.options.position === axisPosition) {
+                            if (found) {
+                                outermost = false;
+                            } else {
+                                innermost = false;
+                            }
+                        }
+                        if (!found) {
+                            first = false;
                         }
                     }
-                    if (!found) {
-                        first = false;
-                    }
-                }
-            });
+                });
+            }
 
             // The outermost axis on each side has no margin
             if (outermost) {
@@ -1903,7 +1887,33 @@ Licensed under the MIT license.
             }
 
             // Compute the axis bounding box and update the plot bounds
-            if (axis.options.ticks){
+            if (options.grid.anchorAxes) {
+                // if multiple axes anchored on grid edge then use maximum axis label width/height
+                if (isXAxis) {
+                    if (axisPosition === "bottom") {
+                        contentHeight = axesLabelsMaxDims.bottom + padding;
+                        plotOffset.bottom = plotOffset0.bottom + contentHeight + axisMargin;
+                        axis.box = { top: surface.height - plotOffset0.bottom - contentHeight - axisMargin, height: contentHeight };
+                    }
+                    else {
+                        contentHeight = axesLabelsMaxDims.top + padding;
+                        axis.box = { top: plotOffset0.top + axisMargin, height: contentHeight };
+                        plotOffset.top = plotOffset0.top + contentHeight + axisMargin;
+                    }
+                }
+                else {
+                    if (axisPosition === "left") {
+                        contentWidth = axesLabelsMaxDims.left + padding;
+                        axis.box = { left: plotOffset0.left + axisMargin, width: contentWidth};
+                        plotOffset.left = plotOffset0.left + contentWidth + axisMargin;
+                    }
+                    else {
+                        contentWidth = axesLabelsMaxDims.right + padding;
+                        plotOffset.right = plotOffset0.right + contentWidth + axisMargin;
+                        axis.box = { left: surface.width - plotOffset0.right - contentWidth - axisMargin, width: contentWidth };
+                    }
+                }
+            } else {
                 if (isXAxis) {
                     contentHeight += padding;
                     if (axisPosition === "top") {
@@ -1921,22 +1931,6 @@ Licensed under the MIT license.
                     } else {
                         axis.box = { left: plotOffset.left + axisMargin, width: contentWidth };
                         plotOffset.left += contentWidth + axisMargin;
-                    }
-                }
-            }else{
-                if (isXAxis) {
-                    contentHeight += padding;
-                    if (axisPosition === "top") {
-                        axis.box = { top: plotOffset.top + axisMargin, height: contentHeight };
-                    } else {
-                        axis.box = { top: surface.height - plotOffset.bottom, height: contentHeight };
-                    }
-                } else {
-                    contentWidth += padding;
-                    if (axisPosition === "right") {
-                        axis.box = { left: surface.width - plotOffset.right, width: contentWidth };
-                    } else {
-                        axis.box = { left: plotOffset.left + axisMargin, width: contentWidth };
                     }
                 }
             }
@@ -2140,6 +2134,11 @@ Licensed under the MIT license.
                 // heuristic based on the model a*sqrt(x) fitted to
                 // some data points that seemed reasonable
                 noTicks = 0.3 * Math.sqrt(axis.direction === "x" ? surface.width : surface.height);
+
+                // reduce tick count when anchored axes
+                if (options.grid.anchorAxes) {
+                    noTicks *= (opts.anchorEnd - opts.anchorStart) / 100;
+                }
             }
 
             var delta = (axis.max - axis.min) / noTicks,
@@ -2457,17 +2456,12 @@ Licensed under the MIT license.
 
             for (var j = 0; j < axes.length; ++j) {
                 var axis = axes[j], box = axis.box,
-                    t = axis.tickLength, x, y, xoff, yoff,
-                    lineWidth = axis.options.tickLineWidth;
+                    t = axis.tickLength, x, y, xoff, yoff;
                 if (!axis.show || axis.ticks.length === 0) {
                     continue;
                 }
 
-                if (lineWidth == null) {
-                    lineWidth = 1;
-                }
-
-                ctx.lineWidth = lineWidth;
+                ctx.lineWidth = 1;
 
                 // find the edges
                 if (axis.direction === "x") {
@@ -2493,10 +2487,16 @@ Licensed under the MIT license.
                     xoff = yoff = 0;
                     if (axis.direction === "x") {
                         xoff = plotWidth + 1;
-                        y = Math.floor(y) + ((lineWidth%2)/2);
                     } else {
                         yoff = plotHeight + 1;
-                        x = Math.floor(x) + ((lineWidth%2)/2);
+                    }
+
+                    if (ctx.lineWidth === 1) {
+                        if (axis.direction === "x") {
+                            y = Math.floor(y) + 0.5;
+                        } else {
+                            x = Math.floor(x) + 0.5;
+                        }
                     }
 
                     ctx.moveTo(x, y);
@@ -2516,25 +2516,34 @@ Licensed under the MIT license.
                     if (isNaN(v) || v < axis.min || v > axis.max || (
 
                         // skip those lying on the axes if we got a border
+                        // (do not skip if multiple axes anchored on grid edge)
                         t === "full" && ((typeof bw === "object" && bw[axis.position] > 0) || bw > 0) &&
-                        (v === axis.min || v === axis.max)
+                        (v === axis.min || v === axis.max) && !options.grid.anchorAxes
                     )) {
                         continue;
                     }
 
                     if (axis.direction === "x") {
-                        x = Math.floor(axis.p2c(v)) + ((lineWidth%2)/2);
+                        x = axis.p2c(v);
                         yoff = t === "full" ? -plotHeight : t;
 
                         if (axis.position === "top") {
                             yoff = -yoff;
                         }
                     } else {
-                        y = Math.floor(axis.p2c(v)) + ((lineWidth%2)/2);
+                        y = axis.p2c(v);
                         xoff = t === "full" ? -plotWidth : t;
 
                         if (axis.position === "left") {
                             xoff = -xoff;
+                        }
+                    }
+
+                    if (ctx.lineWidth === 1) {
+                        if (axis.direction === "x") {
+                            x = Math.floor(x) + 0.5;
+                        } else {
+                            y = Math.floor(y) + 0.5;
                         }
                     }
 
